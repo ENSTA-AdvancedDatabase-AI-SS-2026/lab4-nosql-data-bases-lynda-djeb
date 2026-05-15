@@ -1,72 +1,69 @@
 """
-TP1 - Exercice 4 : Classement des meilleures ventes
-Use Case : Top produits ShopFast en temps réel
+TP1 - Exercice 4 : Classement des ventes temps réel
+Utilisation des Sorted Sets
 """
 import redis
 
 r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
-LEADERBOARD_KEY = "leaderboard:sales"
 
-
-def record_sale(r, product_id, quantity: int = 1):
+def record_sale(r, product_id, quantity=1):
     """
-    Enregistrer une vente dans le classement
-    Utiliser ZINCRBY sur la clé LEADERBOARD_KEY
+    Enregistrer une vente dans les classements
+    Mettre à jour : daily, weekly, all_time
     """
-    # TODO
-    pass
-
-
-def get_top_products(r, n: int = 10) -> list:
-    """
-    Retourner les N produits les plus vendus
-    Format : [{"product_id": "1", "sales": 150}, ...]
-    Astuce : ZREVRANGE avec WITHSCORES
-    """
-    # TODO
-    pass
-
-
-def get_product_rank(r, product_id) -> Optional[int]:
-    """
-    Retourner le rang 1-based d'un produit
-    (1 = best seller, None si pas dans le classement)
-    """
-    # TODO: ZREVRANK retourne 0-based, convertir en 1-based
-    pass
-
-
-def get_products_between_ranks(r, start_rank: int, end_rank: int) -> list:
-    """
-    Retourner les produits entre les rangs start et end (1-based)
-    Ex: rangs 3 à 7 → 5 produits
-    """
-    # TODO
-    pass
-
-
-def simulate_sales_day(r, n_sales: int = 500):
-    """
-    Simuler une journée de ventes aléatoires
-    Générer n_sales ventes aléatoires sur les produits 1-20
-    """
-    import random
-    products = list(range(1, 21))
-    for _ in range(n_sales):
-        product_id = random.choice(products)
-        qty = random.randint(1, 5)
-        record_sale(r, product_id, qty)
-
-
-if __name__ == "__main__":
-    r.flushdb()
+    # ZINCRBY - Incrémente le score (nombre de ventes)
+    r.zincrby("leaderboard:daily", quantity, product_id)
+    r.zincrby("leaderboard:weekly", quantity, product_id)
+    r.zincrby("leaderboard:all_time", quantity, product_id)
     
-    print("Simulation de ventes...")
-    simulate_sales_day(r, 500)
+    # Expiration pour éviter accumulation
+    r.expire("leaderboard:daily", 86400)   # 24h
+    r.expire("leaderboard:weekly", 604800)  # 7 jours
+
+
+def get_top_products(r, period, limit=10):
+    """
+    Récupérer le top N produits pour une période
+    period: 'daily', 'weekly', 'all_time'
+    Retourne liste de tuples (product_id, score)
+    """
+    key = f"leaderboard:{period}"
+    # ZREVRANGE - Tri décroissant (plus haut score d'abord)
+    return r.zrevrange(key, 0, limit - 1, withscores=True)
+
+
+def get_product_rank(r, product_id, period):
+    """
+    Obtenir le rang d'un produit (1 = meilleur)
+    Retourner None si produit non classé
+    """
+    key = f"leaderboard:{period}"
+    # ZREVRANK - Position (0 = premier)
+    rank = r.zrevrank(key, product_id)
     
-    print("\n🏆 Top 5 produits:")
-    for i, p in enumerate(get_top_products(r, 5), 1):
-        print(f"  {i}. Produit #{p['product_id']} — {int(p['sales'])} ventes")
-    
-    print(f"\nRang du produit #1: {get_product_rank(r, 1)}")
+    if rank is not None:
+        return rank + 1  # +1 pour conversion 1-indexed
+    return None
+
+
+def get_product_score(r, product_id, period):
+    """Obtenir le score (nombre de ventes) d'un produit"""
+    key = f"leaderboard:{period}"
+    score = r.zscore(key, product_id)
+    return float(score) if score else 0.0
+
+
+def get_category_leaderboard(r, category, limit=10):
+    """
+    Classement par catégorie
+    """
+    key = f"leaderboard:category:{category}"
+    return r.zrevrange(key, 0, limit - 1, withscores=True)
+
+
+def record_category_sale(r, category, product_id, quantity=1):
+    """Enregistrer une vente dans une catégorie spécifique"""
+    key = f"leaderboard:category:{category}"
+    r.zincrby(key, quantity, product_id)
+    r.expire(key, 2592000)  # 30 jours
