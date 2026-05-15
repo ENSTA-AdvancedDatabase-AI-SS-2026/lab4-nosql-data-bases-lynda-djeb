@@ -1,75 +1,106 @@
--- TP3 - Exercice 1 : Schéma Cassandra
--- Use Case : SmartGrid DZ - IoT Électrique
+-- ============================================
+-- EX1: Modelisation des tables
+-- ============================================
 
--- ─── 1.1 : Créer le Keyspace ──────────────────────────────────────────────────
--- TODO: Créer le keyspace 'smartgrid' avec NetworkTopologyStrategy
--- replication_factor: 3 (pour la production), 1 (pour le TP local)
-
--- CREATE KEYSPACE smartgrid
--- WITH replication = { ??? };
+-- 1.1 Keyspace pour SmartGrid DZ
+CREATE KEYSPACE IF NOT EXISTS smartgrid
+WITH replication = {
+    'class': 'NetworkTopologyStrategy',
+    'datacenter1': 3
+}
+AND durable_writes = true;
 
 USE smartgrid;
 
--- ─── 1.2 : Table mesures_par_capteur ──────────────────────────────────────────
--- Requête cible : "Mesures du capteur X entre T1 et T2"
--- TODO: Définir la PRIMARY KEY correcte
--- Penser : comment éviter les hot partitions avec 10 000 capteurs ?
-
+-- 1.2 Table mesures_par_capteur
+-- Requete: mesures du capteur X entre T1 et T2
 CREATE TABLE IF NOT EXISTS mesures_par_capteur (
-  capteur_id   UUID,
-  -- TODO: Ajouter une colonne pour la date (bucket par jour)
-  timestamp    TIMESTAMP,
-  wilaya       TEXT,
-  commune      TEXT,
-  tension_v    FLOAT,
-  courant_a    FLOAT,
-  puissance_kw FLOAT,
-  frequence_hz FLOAT,
-  temperature  FLOAT,
-  alerte       BOOLEAN,
-  code_alerte  TEXT,
-  -- TODO: Définir PRIMARY KEY ((partition), clustering...)
-  PRIMARY KEY (???)
-) WITH CLUSTERING ORDER BY (timestamp DESC)
-  AND default_time_to_live = 7776000;  -- 90 jours en secondes
+    capteur_id UUID,
+    date DATE,
+    heure TIMESTAMP,
+    wilaya TEXT,
+    tension FLOAT,
+    courant FLOAT,
+    puissance FLOAT,
+    alerte BOOLEAN,
+    PRIMARY KEY ((capteur_id, date), heure)
+) WITH CLUSTERING ORDER BY (heure DESC)
+AND default_time_to_live = 7776000
+AND compaction = {
+    'class': 'TimeWindowCompactionStrategy',
+    'compaction_window_unit': 'DAYS',
+    'compaction_window_size': 1
+};
 
+-- 1.3 Table mesures_par_wilaya
+-- Requete: toutes les mesures d'une wilaya sur une journee
+CREATE TABLE IF NOT EXISTS mesures_par_wilaya (
+    wilaya TEXT,
+    date DATE,
+    heure TIMESTAMP,
+    capteur_id UUID,
+    tension FLOAT,
+    courant FLOAT,
+    puissance FLOAT,
+    alerte BOOLEAN,
+    PRIMARY KEY ((wilaya, date), heure)
+) WITH CLUSTERING ORDER BY (heure DESC)
+AND default_time_to_live = 7776000
+AND compaction = {
+    'class': 'TimeWindowCompactionStrategy',
+    'compaction_window_unit': 'DAYS',
+    'compaction_window_size': 1
+};
 
--- ─── 1.3 : Table alertes_par_wilaya ───────────────────────────────────────────
--- Requête cible : "Alertes de la wilaya X le jour Y"
--- TODO: Concevoir la table
-
+-- 1.4 Table alertes_par_wilaya
+-- Requete: alertes d'une wilaya aujourd'hui
 CREATE TABLE IF NOT EXISTS alertes_par_wilaya (
-  wilaya       TEXT,
-  date_jour    DATE,
-  timestamp    TIMESTAMP,
-  capteur_id   UUID,
-  code_alerte  TEXT,
-  description  TEXT,
-  gravite      INT,   -- 1=info, 2=warning, 3=critique
-  resolue      BOOLEAN,
-  -- TODO: PRIMARY KEY
-  PRIMARY KEY (???)
-) WITH CLUSTERING ORDER BY (timestamp DESC)
-  AND default_time_to_live = 31536000;  -- 1 an
+    wilaya TEXT,
+    date DATE,
+    heure TIMESTAMP,
+    capteur_id UUID,
+    tension FLOAT,
+    courant FLOAT,
+    puissance FLOAT,
+    message TEXT,
+    PRIMARY KEY ((wilaya, date), heure)
+) WITH CLUSTERING ORDER BY (heure DESC)
+AND default_time_to_live = 31536000
+AND compaction = {
+    'class': 'TimeWindowCompactionStrategy',
+    'compaction_window_unit': 'DAYS',
+    'compaction_window_size': 7
+};
 
-
--- ─── 1.4 : Table agregats_horaires ────────────────────────────────────────────
--- Requête cible : "Consommation moyenne par heure pour le dashboard wilaya"
--- TODO: Concevoir la table avec les bonnes agrégations
-
+-- 1.5 Table agregats_horaires
+-- Requete: consommation moyenne par heure (dashboard)
 CREATE TABLE IF NOT EXISTS agregats_horaires (
-  wilaya            TEXT,
-  date_heure        TIMESTAMP,
-  nb_capteurs       INT,
-  puissance_moy_kw  FLOAT,
-  puissance_max_kw  FLOAT,
-  puissance_min_kw  FLOAT,
-  nb_alertes        INT,
-  -- TODO: PRIMARY KEY
-  PRIMARY KEY (???)
-) WITH CLUSTERING ORDER BY (date_heure DESC)
-  AND default_time_to_live = 157680000;  -- 5 ans
+    wilaya TEXT,
+    annee_mois TEXT,
+    heure INT,
+    date_agregat DATE,
+    puissance_moyenne FLOAT,
+    puissance_max FLOAT,
+    puissance_min FLOAT,
+    nombre_mesures BIGINT,
+    PRIMARY KEY ((wilaya, annee_mois), heure, date_agregat)
+) WITH default_time_to_live = 157680000
+AND compaction = {
+    'class': 'TimeWindowCompactionStrategy',
+    'compaction_window_unit': 'MONTHS',
+    'compaction_window_size': 1
+};
 
+-- 1.6 Table capteurs_par_wilaya
+-- Pour lister les capteurs actifs par wilaya
+CREATE TABLE IF NOT EXISTS capteurs_par_wilaya (
+    wilaya TEXT,
+    capteur_id UUID,
+    date_activation DATE,
+    dernier_contact TIMESTAMP,
+    adresse TEXT,
+    PRIMARY KEY (wilaya, capteur_id)
+);
 
--- Vérification
+-- Verification
 DESCRIBE TABLES;
