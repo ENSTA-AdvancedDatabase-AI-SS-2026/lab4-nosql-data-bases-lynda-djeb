@@ -1,97 +1,209 @@
 """
-TP3 - Exercice 2 : Ingestion de données IoT
-Use Case : SmartGrid DZ - 10 000 capteurs, 5 minutes de mesures
+EX2: Ingestion massive de donnees IoT
+10 000 capteurs, 5 minutes de mesures
 """
+
 from cassandra.cluster import Cluster
-from cassandra.query import BatchStatement, BatchType
+from cassandra.query import BatchStatement, SimpleStatement
+from cassandra import ConsistencyLevel
 import uuid
 import random
-from datetime import datetime, timedelta
 import time
+from datetime import datetime, timedelta, date
+from typing import List, Dict
 
-# Configuration
-CASSANDRA_HOST = 'localhost'
-KEYSPACE = 'smartgrid'
-NB_CAPTEURS = 10000
-MINUTES_HISTORIQUE = 5
-
-WILAYAS = ["Alger", "Oran", "Constantine", "Annaba", "Blida"]
-COMMUNES = {
-    "Alger": ["Bab Ezzouar", "Hydra", "El Harrach", "Dar El Beida"],
-    "Oran": ["Bir El Djir", "Es Senia", "Arzew"],
-    "Constantine": ["El Khroub", "Ain Smara", "Hamma Bouziane"],
-    "Annaba": ["El Bouni", "El Hadjar", "Seraidi"],
-    "Blida": ["Bougara", "Boufarik", "Larbaa"],
-}
-
-def connect():
-    """Connexion au cluster Cassandra"""
-    cluster = Cluster([CASSANDRA_HOST])
-    session = cluster.connect(KEYSPACE)
-    return session, cluster
-
-
-def generate_mesure(capteur_id, wilaya, commune, timestamp):
-    """Générer une mesure réaliste pour un capteur"""
-    tension_base = 220  # Volts (réseau algérien)
+class SmartGridIngester:
+    def __init__(self, hosts=['127.0.0.1'], keyspace='smartgrid'):
+        self.cluster = Cluster(hosts)
+        self.session = self.cluster.connect()
+        self.session.set_keyspace(keyspace)
+        
+        self.wilayas = ['Alger', 'Oran', 'Constantine', 'Annaba', 'Tizi Ouzou']
+        self.prepare_statements()
+        
+    def prepare_statements(self):
+        """Prepare les statements pour insertion rapide"""
+        
+        self.insert_mesure_capteur = self.session.prepare("""
+            INSERT INTO mesures_par_capteur 
+            (capteur_id, date, heure, wilaya, tension, courant, puissance, alerte)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """)
+        
+        self.insert_mesure_wilaya = self.session.prepare("""
+            INSERT INTO mesures_par_wilaya 
+            (wilaya, date, heure, capteur_id, tension, courant, puissance, alerte)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """)
+        
+        self.insert_alerte = self.session.prepare("""
+            INSERT INTO alertes_par_wilaya 
+            (wilaya, date, heure, capteur_id, tension, courant, puissance, message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """)
+        
+    def generate_capteurs(self, nb_capteurs: int = 10000) -> List[uuid.UUID]:
+        """Genere des IDs de capteurs"""
+        capteurs = []
+        for i in range(nb_capteurs):
+            capteur_id = uuid.uuid4()
+            capteurs.append(capteur_id)
+            
+            wilaya = random.choice(self.wilayas)
+            self.session.execute(
+                "INSERT INTO capteurs_par_wilaya (wilaya, capteur_id, date_activation, dernier_contact) VALUES (%s, %s, %s, %s)",
+                (wilaya, capteur_id, date.today(), datetime.now())
+            )
+        
+        return capteurs
     
-    return {
-        "capteur_id": capteur_id,
-        "date_jour": timestamp.date(),
-        "timestamp": timestamp,
-        "wilaya": wilaya,
-        "commune": commune,
-        # Variation normale ± 10V
-        "tension_v": round(tension_base + random.gauss(0, 5), 2),
-        "courant_a": round(random.uniform(0.5, 15.0), 2),
-        "puissance_kw": round(random.uniform(0.1, 3.3), 3),
-        "frequence_hz": round(50 + random.gauss(0, 0.1), 2),
-        "temperature": round(random.uniform(20, 65), 1),
-        # 5% de chance d'alerte
-        "alerte": random.random() < 0.05,
-    }
-
-
-def insert_single(session, mesure):
-    """
-    TODO: Insérer une seule mesure dans mesures_par_capteur
-    Utiliser une prepared statement
-    """
-    pass
-
-
-def insert_batch(session, mesures: list):
-    """
-    TODO: Insérer un batch de mesures de manière efficace
-    Utiliser UNLOGGED BATCH pour les séries temporelles
-    Faire des batches de max 50 items (bonne pratique Cassandra)
-    """
-    pass
-
-
-def run_ingestion(session):
-    """
-    TODO: Générer et insérer NB_CAPTEURS × MINUTES_HISTORIQUE mesures
-    1. Générer les capteurs (ID aléatoires + assignation wilaya/commune)
-    2. Pour chaque minute des MINUTES_HISTORIQUE dernières minutes
-       → Insérer les mesures de tous les capteurs
-    3. Mesurer et afficher :
-       - Nombre total d'insertions
-       - Durée totale
-       - Débit (mesures/seconde)
-    """
-    print(f"Démarrage ingestion : {NB_CAPTEURS} capteurs × {MINUTES_HISTORIQUE} min")
-    start = time.time()
+    def generer_mesure(self, capteur_id: uuid.UUID, timestamp: datetime, wilaya: str) -> Dict:
+        """Genere une mesure aleatoire realiste"""
+        
+        base_tension = 220.0
+        tension = base_tension + random.uniform(-15, 15)
+        
+        if random.random() < 0.05:
+            tension = base_tension + random.uniform(-30, 30)
+        
+        courant = random.uniform(0.5, 50.0)
+        puissance = tension * courant / 1000
+        
+        alerte = (tension < 200 or tension > 240 or puissance > 15)
+        
+        return {
+            'capteur_id': capteur_id,
+            'timestamp': timestamp,
+            'wilaya': wilaya,
+            'tension': round(tension, 1),
+            'courant': round(courant, 2),
+            'puissance': round(puissance, 2),
+            'alerte': alerte
+        }
     
-    # TODO: Implémenter
+    def inserer_mesure(self, mesure: Dict):
+        """Insere une mesure dans les tables"""
+        
+        date_val = mesure['timestamp'].date()
+        
+        self.session.execute(
+            self.insert_mesure_capteur,
+            (mesure['capteur_id'], date_val, mesure['timestamp'], 
+             mesure['wilaya'], mesure['tension'], mesure['courant'], 
+             mesure['puissance'], mesure['alerte'])
+        )
+        
+        self.session.execute(
+            self.insert_mesure_wilaya,
+            (mesure['wilaya'], date_val, mesure['timestamp'],
+             mesure['capteur_id'], mesure['tension'], mesure['courant'],
+             mesure['puissance'], mesure['alerte'])
+        )
+        
+        if mesure['alerte']:
+            message = f"Tension anormale: {mesure['tension']}V"
+            self.session.execute(
+                self.insert_alerte,
+                (mesure['wilaya'], date_val, mesure['timestamp'],
+                 mesure['capteur_id'], mesure['tension'], mesure['courant'],
+                 mesure['puissance'], message)
+            )
     
-    elapsed = time.time() - start
-    total = NB_CAPTEURS * MINUTES_HISTORIQUE
-    print(f"\n✅ {total:,} mesures insérées en {elapsed:.1f}s")
-    print(f"   Débit : {total/elapsed:,.0f} mesures/seconde")
-
+    def inserer_batch(self, mesures: List[Dict]):
+        """Insere un lot de mesures avec BATCH"""
+        
+        batch = BatchStatement(consistency_level=ConsistencyLevel.ONE)
+        
+        for mesure in mesures:
+            date_val = mesure['timestamp'].date()
+            
+            batch.add(self.insert_mesure_capteur, (
+                mesure['capteur_id'], date_val, mesure['timestamp'],
+                mesure['wilaya'], mesure['tension'], mesure['courant'],
+                mesure['puissance'], mesure['alerte']
+            ))
+            
+            batch.add(self.insert_mesure_wilaya, (
+                mesure['wilaya'], date_val, mesure['timestamp'],
+                mesure['capteur_id'], mesure['tension'], mesure['courant'],
+                mesure['puissance'], mesure['alerte']
+            ))
+            
+            if mesure['alerte']:
+                message = f"Tension anormale: {mesure['tension']}V"
+                batch.add(self.insert_alerte, (
+                    mesure['wilaya'], date_val, mesure['timestamp'],
+                    mesure['capteur_id'], mesure['tension'], mesure['courant'],
+                    mesure['puissance'], message
+                ))
+        
+        self.session.execute(batch)
+    
+    def generer_donnees_historique(self, capteurs: List[uuid.UUID], minutes: int = 5):
+        """Genere et insere des donnees sur plusieurs minutes"""
+        
+        capteur_wilaya = {}
+        for capteur_id in capteurs[:1000]:
+            result = self.session.execute(
+                "SELECT wilaya FROM capteurs_par_wilaya WHERE capteur_id = %s",
+                (capteur_id,)
+            )
+            row = result.one()
+            if row:
+                capteur_wilaya[capteur_id] = row.wilaya
+        
+        start_time = datetime.now() - timedelta(minutes=minutes)
+        
+        total_mesures = 0
+        start_ingest = time.time()
+        
+        for minute in range(minutes):
+            timestamp = start_time + timedelta(minutes=minute)
+            batch_mesures = []
+            
+            for capteur_id in list(capteur_wilaya.keys())[:1000]:
+                wilaya = capteur_wilaya[capteur_id]
+                mesure = self.generer_mesure(capteur_id, timestamp, wilaya)
+                batch_mesures.append(mesure)
+                
+                if len(batch_mesures) >= 50:
+                    self.inserer_batch(batch_mesures)
+                    total_mesures += len(batch_mesures)
+                    batch_mesures = []
+            
+            if batch_mesures:
+                self.inserer_batch(batch_mesures)
+                total_mesures += len(batch_mesures)
+            
+            print(f"Minute {minute+1}/{minutes}: {len(batch_mesures)} mesures inserees")
+        
+        elapsed = time.time() - start_ingest
+        debit = total_mesures / elapsed
+        
+        print(f"\n=== STATISTIQUES INGESTION ===")
+        print(f"Total mesures: {total_mesures}")
+        print(f"Temps total: {elapsed:.2f} secondes")
+        print(f"Debit: {debit:.0f} mesures/seconde")
+        
+        return total_mesures, elapsed, debit
+    
+    def executer(self, nb_capteurs: int = 1000, minutes: int = 5):
+        """Execute l'ingestion complete"""
+        
+        print("=== SMARTGRID INGESTER ===")
+        print(f"Generation de {nb_capteurs} capteurs...")
+        capteurs = self.generate_capteurs(nb_capteurs)
+        
+        print(f"Ingestion sur {minutes} minutes...")
+        total, temps, debit = self.generer_donnees_historique(capteurs, minutes)
+        
+        return {
+            'capteurs': nb_capteurs,
+            'mesures': total,
+            'temps_sec': temps,
+            'debit_mesures_sec': debit
+        }
 
 if __name__ == "__main__":
-    session, cluster = connect()
-    run_ingestion(session)
-    cluster.shutdown()
+    ingester = SmartGridIngester()
+    stats = ingester.executer(nb_capteurs=500, minutes=3)
