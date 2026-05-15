@@ -1,0 +1,84 @@
+"""
+TP1 - Exercice 5 : Pipeline et Transactions
+Optimisation des opérations batch
+"""
+import redis
+import time
+
+r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+
+
+def bulk_insert_products(r, products):
+    """
+    Insertion massive avec PIPELINE
+    products: liste de dictionnaires avec 'id', 'name', 'price', 'stock'
+    """
+    start = time.time()
+    pipe = r.pipeline()
+    
+    for product in products:
+        key = f"product:{product['id']}"
+        # Ajoute les commandes au pipeline
+        pipe.hset(key, mapping=product)
+        pipe.expire(key, 3600)
+    
+    # Exécute TOUTES les commandes en une fois
+    results = pipe.execute()
+    
+    elapsed_ms = (time.time() - start) * 1000
+    
+    return {
+        'products': len(products),
+        'time_ms': round(elapsed_ms, 2),
+        'commands': len(results)
+    }
+
+
+def process_order_atomic(r, order_id, user_id, items):
+    """
+    Transaction atomique avec MULTI/EXEC
+    items: [{'product_id': '1', 'quantity': 2}, ...]
+    """
+    # MULTI - Commence la transaction
+    pipe = r.pipeline()
+    
+    # 1. Déduire le stock pour chaque produit
+    for item in items:
+        stock_key = f"stock:{item['product_id']}"
+        pipe.decrby(stock_key, item['quantity'])
+    
+    # 2. Enregistrer la commande
+    order_key = f"order:{order_id}"
+    pipe.hset(order_key, mapping={
+        'user_id': user_id,
+        'status': 'confirmed',
+        'total_items': sum(i['quantity'] for i in items),
+        'timestamp': str(time.time())
+    })
+    pipe.expire(order_key, 86400)  # 24h
+    
+    # 3. Mettre à jour les ventes
+    for item in items:
+        pipe.zincrby("sales:daily", item['quantity'], item['product_id'])
+    
+    # EXEC - Exécute TOUT ou RIEN
+    results = pipe.execute()
+    
+    return {
+        'success': True,
+        'order_id': order_id,
+        'operations': len(results)
+    }
+
+
+def bulk_get_products(r, product_ids):
+    """Récupérer plusieurs produits en une seule requête"""
+    pipe = r.pipeline()
+    
+    for pid in product_ids:
+        pipe.hgetall(f"product:{pid}")
+    
+    results = pipe.execute()
+    
+    # Associer chaque résultat à son ID
+    return {pid: data for pid, data in zip(product_ids, results) if data}
