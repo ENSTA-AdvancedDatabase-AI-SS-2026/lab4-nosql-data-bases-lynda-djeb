@@ -1,46 +1,61 @@
-/**
- * TP2 - Exercice 4 : Index et Optimisation
- */
+// ============================================
+// EX4: Index et optimisation
+// ============================================
 
-use("medical_db");
+// 4.1 Creation des index
 
-// ─── 4.1 : Créer les index appropriés ────────────────────────────────────────
+// Pour recherche par wilaya
+db.patients.createIndex({ "adresse.wilaya": 1 });
 
-// Index 1 : Recherche fréquente par wilaya + antécédents
-// TODO: Créer l'index composé approprié
-// db.patients.createIndex({ ... });
+// Pour recherche par antecedents
+db.patients.createIndex({ antecedents: 1 });
 
-// Index 2 : Recherche par date de consultation
-// TODO:
-// db.patients.createIndex({ ... });
+// Pour recherche par age
+db.patients.createIndex({ dateNaissance: -1 });
 
-// Index 3 : Texte sur diagnostics pour recherche full-text
-// TODO:
-// db.patients.createIndex({ ... });
+// Pour recherche textuelle sur diagnostics
+db.patients.createIndex({ "consultations.diagnostic": "text" });
 
-// Index 4 : Analyses par patient (lookup)
-// TODO:
-// db.analyses.createIndex({ ... });
+// Pour recherche par medecin
+db.patients.createIndex({ "consultations.medecin.nom": 1 });
 
+// Pour recherche par date de consultation
+db.patients.createIndex({ "consultations.date": -1 });
 
-// ─── 4.2 : Comparer avec explain() ────────────────────────────────────────────
+// 4.2 Comparaison SANS index vs AVEC index
 
-// Requête de test
-const requeteTest = {
+// SANS INDEX (desactiver l'index pour test)
+print("=== REQUETE SANS INDEX ===");
+db.patients.getIndexes().forEach(idx => {
+  if (idx.name !== "_id_") db.patients.dropIndex(idx.name);
+});
+
+db.patients.find({
   "adresse.wilaya": "Alger",
-  antecedents: "Diabète type 2"
-};
+  antecedents: "Diabete type 2"
+}).explain("executionStats");
 
-print("=== AVANT index ===");
-// TODO: Exécuter avec explain("executionStats") et afficher les métriques
+// AVEC INDEX
+print("\n=== REQUETE AVEC INDEX ===");
+db.patients.createIndex({ "adresse.wilaya": 1, antecedents: 1 });
 
-print("\n=== APRÈS index ===");
-// TODO: Après création de l'index, même requête avec explain()
-// Comparer : nReturned, totalDocsExamined, executionTimeMillis
+db.patients.find({
+  "adresse.wilaya": "Alger",
+  antecedents: "Diabete type 2"
+}).explain("executionStats");
 
-// ─── 4.4 : Index TTL pour archivage ───────────────────────────────────────────
-// TODO: Créer un index TTL sur analyses.date pour expirer après 5 ans
-// db.analyses.createIndex(
-//   { date: 1 },
-//   { expireAfterSeconds: ??? }
-// );
+// 4.3 Index compose pour requete complexe
+db.patients.createIndex({
+  "adresse.wilaya": 1,
+  antecedents: 1,
+  dateNaissance: -1
+});
+
+// 4.4 Index TTL pour archiver analyses de plus de 5 ans
+db.analyses.createIndex(
+  { date: 1 },
+  { expireAfterSeconds: 157680000 }
+);
+
+print("\n=== INDEX ACTIFS ===");
+db.patients.getIndexes().forEach(printjson);
